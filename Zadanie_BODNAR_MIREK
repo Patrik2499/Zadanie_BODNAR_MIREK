@@ -1,0 +1,103 @@
+import pybullet as p
+import pybullet_data
+import time
+import numpy as np
+import os
+import csv
+import matplotlib.pyplot as plt
+from scipy.spatial import ConvexHull  # Na generovanie konvexného obalu
+
+# === Inicializácia PyBullet ===
+p.connect(p.GUI)
+p.setAdditionalSearchPath(pybullet_data.getDataPath())
+p.resetSimulation()
+p.setGravity(0, 0, -9.81)
+p.loadURDF("plane.urdf")
+
+# === Načítanie robota ===
+robot = p.loadURDF("kuka_iiwa/model.urdf", useFixedBase=True)
+
+# === Zistenie pohyblivých kĺbov a ich limitov ===
+num_joints = p.getNumJoints(robot)
+joint_limits = []
+movable_joints = []
+for i in range(num_joints):
+   joint_info = p.getJointInfo(robot, i)
+   if joint_info[2] == p.JOINT_REVOLUTE:
+       joint_limits.append((joint_info[8], joint_info[9]))
+       movable_joints.append(i)
+
+# === Funkcia na nastavenie náhodných uhlov ===
+def set_random_joint_angles():
+   angles = []
+   for i, joint_index in enumerate(movable_joints):
+       low, high = joint_limits[i]
+       angle = np.random.uniform(low, high)
+       p.setJointMotorControl2(robot, joint_index, p.POSITION_CONTROL, targetPosition=angle)
+       angles.append(angle)
+   return angles
+
+# === Funkcia na získanie pozície koncového efektora ===
+def get_end_effector_position():
+   state = p.getLinkState(robot, movable_joints[-1])
+   return np.array(state[4])  # World COM position
+
+# === Validácia pozície ===
+def is_valid_position(pos):
+   return np.all(np.isfinite(pos)) and np.linalg.norm(pos) < 10
+
+# === Generovanie pracovného priestoru ===
+workspace_points = []
+print("Generujem body pracovného priestoru...")
+for step in range(800):  # Môžete upraviť počet krokov
+   set_random_joint_angles()
+   for _ in range(50):
+       p.stepSimulation()
+       time.sleep(0.000000001)
+   pos = get_end_effector_position()
+   if not is_valid_position(pos):
+       continue
+   workspace_points.append(pos.tolist())
+   p.addUserDebugPoints([pos.tolist()], [[1, 0, 0]], pointSize=6)  # Voliteľné vizualizovanie
+
+# === Uloženie bodov do CSV ===
+csv_path = os.path.join(os.getcwd(), "workspace_points.csv")
+with open(csv_path, "w", newline="") as file:
+   writer = csv.writer(file)
+   writer.writerow(["X", "Y", "Z"])
+   for point in workspace_points:
+       writer.writerow(point)
+print(f"Hotovo! Body uložené do {csv_path}")
+
+# === Pridanie maximálnych hodnôt do pracovného priestoru ===
+workspace_points = np.array(workspace_points)
+max_x = np.max(workspace_points[:, 0])
+max_y = np.max(workspace_points[:, 1])
+max_z = np.max(workspace_points[:, 2])
+
+# Pridanie bodov s maximálnymi hodnotami
+workspace_points = np.vstack([workspace_points, [max_x, 0, 0], [0, max_y, 0], [0, 0, max_z]])
+
+# === Vytvorenie konvexného obalu z bodov ===
+hull = ConvexHull(workspace_points)
+
+# === Vizualizácia pomocou Matplotlib ===
+fig = plt.figure()
+ax = fig.add_subplot(111, projection='3d')
+
+# Zobrazenie bodov (voliteľné)
+#ax.scatter(workspace_points[:, 0], workspace_points[:, 1], workspace_points[:, 2], c='b', marker='o')
+
+# Zobrazenie škrupiny ako povrchu (Delaunay triangulácia)
+ax.plot_trisurf(workspace_points[:, 0], workspace_points[:, 1], workspace_points[:, 2], triangles=hull.simplices, color='cyan', alpha=0.3)
+
+# Nastavenie osí a titulov
+ax.set_xlabel("X [m]")
+ax.set_ylabel("Y [m]")
+ax.set_zlabel("Z [m]")
+ax.set_title("Robot Reachability Map (Convex Hull)")
+
+plt.show()
+
+# === Ukončenie simulácie (voliteľné) ===
+p.disconnect()
